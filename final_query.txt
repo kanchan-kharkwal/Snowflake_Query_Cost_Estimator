@@ -1,0 +1,208 @@
+select * from snowflake.account_usage.warehouse_metering_history where START_TIME>='2025-04-17 08:17:37.296 -0700' and END_TIME<='2025-04-17 08:17:58.533 -0700';
+select * from AKASX.PUBLIC.query_texts;
+select * from temp_successful_queries;
+select * from SNOWFLAKE_SAMPLE_DATA.TPCDS_SF10TCL.CATALOG_SALES limit 10;
+
+SELECT * FROM AKASX.PUBLIC.QUERY_EXECUTION_COST_LOG;
+
+truncate table AKASX.PUBLIC.QUERY_EXECUTION_COST_LOG;
+
+ALTER SESSION SET USE_CACHED_RESULT = FALSE;
+
+----------------------------------------------
+
+-- Step 1: Run the benchmark queries
+CALL AKASX.PUBLIC.run_benchmark_queries();
+
+-- Step 2: Run 
+CALL run_and_log_benchmark_credits();
+
+CREATE OR REPLACE PROCEDURE AKASX.PUBLIC.run_and_log_benchmark_credits()
+RETURNS STRING 
+LANGUAGE SQL
+EXECUTE AS CALLER 
+-- TABLE(query_text STRING, query_id STRING, credits_used FLOAT)
+AS
+$$
+DECLARE
+    v_warehouse_name STRING;
+    v_warehouse_size STRING;
+    v_start_time TIMESTAMP_LTZ;
+    v_end_time TIMESTAMP_LTZ;
+    v_query_id STRING;
+    v_query_text STRING;
+    v_exec_seconds FLOAT;
+    v_avg_running FLOAT;
+    v_interval_minutes FLOAT;
+    v_credits_per_hour FLOAT;
+    v_estimated_credits FLOAT;
+    v_estimated_cost FLOAT;
+    v_benchmark_start_time TIMESTAMP_LTZ;
+
+    my_cursor CURSOR FOR 
+            SELECT * FROM (
+                SELECT *, 
+                       ROW_NUMBER() OVER (PARTITION BY end_time, exec_time ORDER BY start_time DESC) AS rn
+                FROM temp_successful_queries
+            )
+            WHERE rn = 1 ;
+ 
+BEGIN    
+    -- CALL SYSTEM$WAIT(1, 'MINUTES');
+
+    -- Step 2: Update the query_id in the query_texts table
+    UPDATE AKASX.PUBLIC.query_texts tgt
+    SET tgt.query_id = src.query_id
+    FROM (
+        select * 
+        from (
+        SELECT row_number()over(partition by a.QUERY_TEXT order by a.START_TIME desc) AS rn,a.START_TIME AS D, a.*
+            FROM TABLE(
+                SNOWFLAKE.INFORMATION_SCHEMA.QUERY_HISTORY(DATEADD('DAY', -1, CURRENT_TIMESTAMP()), CURRENT_TIMESTAMP,1000)
+            )  as a
+            JOIN AKASX.PUBLIC.query_texts as b
+            on a.QUERY_TEXT=b.query_text
+            WHERE execution_status = 'SUCCESS'
+        ) a 
+        where rn =1
+    ) src
+    WHERE src.query_text = tgt.query_text;
+    
+
+    -- -- Step 3 Fetch details form Query History by joining with query_texts table 
+
+    CREATE OR REPLACE TEMPORARY TABLE temp_successful_queries AS
+    SELECT 
+        qh.QUERY_ID,
+        qh.WAREHOUSE_NAME,
+        qh.WAREHOUSE_SIZE,
+        qh.START_TIME,
+        qh.END_TIME,
+        qh.EXECUTION_TIME / 1000.0 as exec_time,
+        qh.QUERY_TEXT,
+        null as CREDITS_PER_HOUR,
+        null as average_running,
+        null as interval_minutes,
+        null as estimated_credits,
+        null as estimated_cost
+    FROM TABLE(SNOWFLAKE.INFORMATION_SCHEMA.QUERY_HISTORY(
+        DATEADD('day', -1, CURRENT_TIMESTAMP()), CURRENT_TIMESTAMP,1000
+    )) qh
+    JOIN AKASX.PUBLIC.query_texts qt
+    ON qh.query_id = qt.query_id
+    WHERE EXECUTION_STATUS = 'SUCCESS'
+    ORDER BY START_TIME DESC;
+
+    
+
+
+    -- Loop through each row in the cursor
+    FOR record IN my_cursor DO
+        BEGIN
+            -- Assign cursor data to variables
+            
+             v_query_id := record.query_id;
+             v_warehouse_size := record.warehouse_size;
+             v_exec_seconds := record.exec_time;
+             v_query_text := record.query_text;
+             v_start_time := record.start_time;
+             v_end_time := record.end_time;
+             v_warehouse_name := record.warehouse_name;
+
+
+                     -- -- -- -- Step 4: Get credit rate per warehouse size
+            SELECT COLUMN2::FLOAT
+            INTO v_credits_per_hour
+            FROM VALUES 
+                ('XSMALL', 1), 
+                ('SMALL', 2), 
+                ('MEDIUM', 4), 
+                ('LARGE', 8), 
+                ('XLARGE', 16), 
+                ('2XLARGE', 32)
+            AS CREDIT_RATE(SIZE, COLUMN2)
+            WHERE REPLACE(UPPER(SIZE), '-', '') = REPLACE(UPPER(:v_warehouse_size), '-', '');
+            -- WHERE UPPER(SIZE) = UPPER(:v_warehouse_size);
+                
+            -- Run query using the cursor values and store result in v_avg_running
+              v_avg_running := (SELECT AVG(AVG_RUNNING)
+             FROM TABLE(
+                 INFORMATION_SCHEMA.WAREHOUSE_LOAD_HISTORY(
+                     DATE_RANGE_START => :v_start_time, 
+                     DATE_RANGE_END => :v_end_time)
+             )
+             WHERE WAREHOUSE_NAME = :v_warehouse_name
+             );
+
+             v_interval_minutes := DATEDIFF('millisecond', v_start_time, v_end_time)/60000;
+
+            -- Step 6: Estimate credit and cost
+            v_estimated_credits := ROUND(v_avg_running * (v_interval_minutes / 60.0) * v_credits_per_hour, 10);
+            v_estimated_cost := ROUND(v_estimated_credits * 3, 6);  -- assuming $3 per credit;
+
+    
+            -- Update the temp_successful_queries table with the calculated avg_running
+            UPDATE temp_successful_queries
+            SET average_running = :v_avg_running,
+                interval_minutes = :v_interval_minutes,
+                estimated_credits = :v_estimated_credits,
+                estimated_cost  = :v_estimated_cost
+            WHERE start_time = :v_start_time
+              AND end_time = :v_end_time
+              AND warehouse_name = :v_warehouse_name;
+           
+        END;
+    END FOR;
+    
+
+    
+
+    -- -- -- Step 7: Insert log
+    INSERT INTO AKASX.PUBLIC.QUERY_EXECUTION_COST_LOG (  
+        QUERY_ID,
+        QUERY_TEXT,
+        WAREHOUSE_SIZE,
+        START_TIME,
+        END_TIME,
+        EXECUTION_SECONDS,
+        AVERAGE_RUNNING,
+        INTERVAL_MINUTES,
+        ESTIMATED_COMPUTE_CREDITS,
+        ESTIMATED_COMPUTE_COST_USD,
+        WAREHOUSE_NAME
+        )
+    SELECT
+        QUERY_ID,
+    	QUERY_TEXT,
+    	WAREHOUSE_SIZE,
+    	START_TIME,
+    	END_TIME,
+    	EXEC_TIME,
+    	AVERAGE_RUNNING,
+        INTERVAL_MINUTES,
+        ESTIMATED_CREDITS,
+	    ESTIMATED_COST,
+    	WAREHOUSE_NAME
+    FROM temp_successful_queries;
+    
+    RETURN 'SUCCESS ' || v_warehouse_size;
+END;
+$$;
+
+
+create or replace TABLE AKASX.PUBLIC.QUERY_EXECUTION_COST_LOG (
+    AUDIT_ID NUMBER IDENTITY,
+	QUERY_ID VARCHAR(16777216),
+    QUERY_TEXT VARCHAR(16777216),
+	WAREHOUSE_SIZE VARCHAR(16777216),
+	START_TIME TIMESTAMP_LTZ(9),
+	END_TIME TIMESTAMP_LTZ(9),
+	EXECUTION_SECONDS FLOAT,
+	AVERAGE_RUNNING FLOAT,
+	INTERVAL_MINUTES FLOAT,
+	ESTIMATED_COMPUTE_CREDITS NUMBER(20,8),
+	ESTIMATED_COMPUTE_COST_USD NUMBER(20,6),
+	WAREHOUSE_NAME VARCHAR(16777216),
+	CREATED_AT TIMESTAMP_LTZ(9) DEFAULT CURRENT_TIMESTAMP()
+);
+
