@@ -1,13 +1,13 @@
-CREATE OR REPLACE TABLE AKASX.PUBLIC.query_texts (
+CREATE OR REPLACE TABLE CLIENT_DB.PUBLIC.query_texts (
     num NUMBER IDENTITY,
     query_id STRING,
     query_text TEXT
 );
 
-ALTER TABLE AKASX.PUBLIC.query_texts
+ALTER TABLE CLIENT_DB.PUBLIC.query_texts
 ADD COLUMN active_flag NUMBER DEFAULT 0; --inactive flags 
 
-UPDATE AKASX.PUBLIC.query_texts 
+UPDATE CLIENT_DB.PUBLIC.query_texts 
 SET active_flag = 1;
 
 
@@ -15,13 +15,13 @@ select * from query_texts;
 
 truncate table query_texts;
 
----------------- UPDATE QUERY ID -------------------
-UPDATE AKASX.PUBLIC.query_texts tgt
+-- -------------- UPDATE QUERY ID -------------------
+UPDATE CLIENT_DB.PUBLIC.query_texts tgt
 SET tgt.query_id = src.query_id
 FROM (
     SELECT row_number()over(partition by a.QUERY_TEXT order by a.START_TIME desc) AS rn,a.START_TIME AS D,a.*
         FROM TABLE(SNOWFLAKE.INFORMATION_SCHEMA.QUERY_HISTORY(DATEADD('HOUR', -4, CURRENT_TIMESTAMP()), CURRENT_TIMESTAMP))  as a
-        JOIN AKASX.PUBLIC.query_texts as b
+        JOIN CLIENT_DB.PUBLIC.query_texts as b
         on a.QUERY_TEXT=b.query_text
         WHERE execution_status = 'SUCCESS'
 ) src
@@ -29,20 +29,22 @@ WHERE src.query_text = tgt.query_text
 AND rn =1;
 
 
-UPDATE AKASX.PUBLIC.query_texts tgt
+UPDATE CLIENT_DB.PUBLIC.query_texts tgt
 SET query_id = null;
 
 
------------ CALL QUERY IN PROCEDURE -------------------
-UPDATE AKASX.PUBLIC.query_texts tgt
-SET query_text = 'CALL AKASX.PUBLIC.top_supplier_revenue();'
+-- --------- CALL QUERY IN PROCEDURE -------------------
+UPDATE CLIENT_DB.PUBLIC.query_texts tgt
+SET query_text = 'CALL CLIENT_DB.PUBLIC.top_supplier_revenue();'
 WHERE num = 15;
 
-----------PROCEDURE TO RUN QUERIES------------------------
- 
-CALL AKASX.PUBLIC.top_supplier_revenue();
 
-CREATE OR REPLACE PROCEDURE AKASX.PUBLIC.top_supplier_revenue()
+
+-- --------PROCEDURE TO RUN QUERY------------------------
+ 
+CALL CLIENT_DB.PUBLIC.top_supplier_revenue();
+
+CREATE OR REPLACE PROCEDURE CLIENT_DB.PUBLIC.top_supplier_revenue()
     RETURNS STRING
     LANGUAGE SQL
     EXECUTE AS CALLER
@@ -91,7 +93,7 @@ $$;
 
 
 
--- INSERT ALL THE QUERIES
+-- INSERT ALL THE QUERIES ------------------------------------------------------
 INSERT INTO query_texts (query_text)
 VALUES
 ( 'select 

@@ -1,15 +1,15 @@
 ALTER SESSION SET USE_CACHED_RESULT = FALSE;
 
 
-CALL AKASX.PUBLIC.run_benchmark_queries();
+CALL CLIENT_DB.PUBLIC.run_benchmark_queries();
 
 SELECT * 
-FROM AKASX.PUBLIC.query_texts
+FROM CLIENT_DB.PUBLIC.query_texts
 WHERE active_flag = 0 
 ORDER BY num
 LIMIT 22;
 
-CREATE OR REPLACE PROCEDURE AKASX.PUBLIC.run_benchmark_queries()
+CREATE OR REPLACE PROCEDURE CLIENT_DB.PUBLIC.run_benchmark_queries()
 RETURNS STRING
 LANGUAGE SQL
 AS
@@ -18,7 +18,7 @@ DECLARE
     i INTEGER DEFAULT 0;
     query_cursor CURSOR FOR 
         SELECT query_text 
-        FROM AKASX.PUBLIC.query_texts
+        FROM CLIENT_DB.PUBLIC.query_texts
         WHERE active_flag =1
         ORDER BY num;
 BEGIN
@@ -47,7 +47,7 @@ SELECT
     FROM TABLE(SNOWFLAKE.INFORMATION_SCHEMA.QUERY_HISTORY(
         DATEADD('day', -1, CURRENT_TIMESTAMP()), CURRENT_TIMESTAMP()
     )) qh
-    JOIN AKASX.PUBLIC.query_texts qt
+    JOIN CLIENT_DB.PUBLIC.query_texts qt
     ON qh.query_id = qt.query_id
     WHERE EXECUTION_STATUS = 'SUCCESS'
     ORDER BY START_TIME DESC;

@@ -1,23 +1,26 @@
 select * from snowflake.account_usage.warehouse_metering_history where START_TIME>='2025-04-17 08:17:37.296 -0700' and END_TIME<='2025-04-17 08:17:58.533 -0700';
-select * from AKASX.PUBLIC.query_texts;
+
+select * from CLIENT_DB.PUBLIC.query_texts;
+
 select * from temp_successful_queries;
-select * from SNOWFLAKE_SAMPLE_DATA.TPCDS_SF10TCL.CATALOG_SALES limit 10;
 
-SELECT * FROM AKASX.PUBLIC.QUERY_EXECUTION_COST_LOG;
+SELECT * FROM CLIENT_DB.PUBLIC.QUERY_EXECUTION_COST_LOG;
 
-truncate table AKASX.PUBLIC.QUERY_EXECUTION_COST_LOG;
+truncate table CLIENT_DB.PUBLIC.QUERY_EXECUTION_COST_LOG;
+
+-- --------------------- REMOVED CACHE ---------------------------
 
 ALTER SESSION SET USE_CACHED_RESULT = FALSE;
 
-----------------------------------------------
+-- ----------------PROCEDURE TO RUN QUERIES ------------------------
 
 -- Step 1: Run the benchmark queries
-CALL AKASX.PUBLIC.run_benchmark_queries();
+CALL CLIENT_DB.PUBLIC.run_benchmark_queries();
 
 -- Step 2: Run 
 CALL run_and_log_benchmark_credits();
 
-CREATE OR REPLACE PROCEDURE AKASX.PUBLIC.run_and_log_benchmark_credits()
+CREATE OR REPLACE PROCEDURE CLIENT_DB.PUBLIC.run_and_log_benchmark_credits()
 RETURNS STRING 
 LANGUAGE SQL
 EXECUTE AS CALLER 
@@ -50,8 +53,8 @@ DECLARE
 BEGIN    
     -- CALL SYSTEM$WAIT(1, 'MINUTES');
 
-    -- Step 2: Update the query_id in the query_texts table
-    UPDATE AKASX.PUBLIC.query_texts tgt
+    -- Step 2: Update the query_id in the query_texts table -----------------------------------
+    UPDATE CLIENT_DB.PUBLIC.query_texts tgt
     SET tgt.query_id = src.query_id
     FROM (
         select * 
@@ -60,7 +63,7 @@ BEGIN
             FROM TABLE(
                 SNOWFLAKE.INFORMATION_SCHEMA.QUERY_HISTORY(DATEADD('DAY', -1, CURRENT_TIMESTAMP()), CURRENT_TIMESTAMP,1000)
             )  as a
-            JOIN AKASX.PUBLIC.query_texts as b
+            JOIN CLIENT_DB.PUBLIC.query_texts as b
             on a.QUERY_TEXT=b.query_text
             WHERE execution_status = 'SUCCESS'
         ) a 
@@ -69,7 +72,7 @@ BEGIN
     WHERE src.query_text = tgt.query_text;
     
 
-    -- -- Step 3 Fetch details form Query History by joining with query_texts table 
+    -- -- Step 3 Fetch details form Query History by joining with query_texts table --------------------
 
     CREATE OR REPLACE TEMPORARY TABLE temp_successful_queries AS
     SELECT 
@@ -88,12 +91,11 @@ BEGIN
     FROM TABLE(SNOWFLAKE.INFORMATION_SCHEMA.QUERY_HISTORY(
         DATEADD('day', -1, CURRENT_TIMESTAMP()), CURRENT_TIMESTAMP,1000
     )) qh
-    JOIN AKASX.PUBLIC.query_texts qt
+    JOIN CLIENT_DB.PUBLIC.query_texts qt
     ON qh.query_id = qt.query_id
     WHERE EXECUTION_STATUS = 'SUCCESS'
     ORDER BY START_TIME DESC;
 
-    
 
 
     -- Loop through each row in the cursor
@@ -110,7 +112,7 @@ BEGIN
              v_warehouse_name := record.warehouse_name;
 
 
-                     -- -- -- -- Step 4: Get credit rate per warehouse size
+            -- -- -- -- Step 4: Get credit rate per warehouse size -----------------------
             SELECT COLUMN2::FLOAT
             INTO v_credits_per_hour
             FROM VALUES 
@@ -136,7 +138,7 @@ BEGIN
 
              v_interval_minutes := DATEDIFF('millisecond', v_start_time, v_end_time)/60000;
 
-            -- Step 6: Estimate credit and cost
+            -- -------------Step 6: Estimate credit and cost -------------------------------------------------
             v_estimated_credits := ROUND(v_avg_running * (v_interval_minutes / 60.0) * v_credits_per_hour, 10);
             v_estimated_cost := ROUND(v_estimated_credits * 3, 6);  -- assuming $3 per credit;
 
@@ -154,11 +156,8 @@ BEGIN
         END;
     END FOR;
     
-
-    
-
-    -- -- -- Step 7: Insert log
-    INSERT INTO AKASX.PUBLIC.QUERY_EXECUTION_COST_LOG (  
+    -- ------------------ Step 7: Insert log -----------------
+    INSERT INTO CLIENT_DB.PUBLIC.QUERY_EXECUTION_COST_LOG (  
         QUERY_ID,
         QUERY_TEXT,
         WAREHOUSE_SIZE,
@@ -190,7 +189,8 @@ END;
 $$;
 
 
-create or replace TABLE AKASX.PUBLIC.QUERY_EXECUTION_COST_LOG (
+-- -------------- LOG TABLE ------------------- 
+create or replace TABLE CLIENT_DB.PUBLIC.QUERY_EXECUTION_COST_LOG (
     AUDIT_ID NUMBER IDENTITY,
 	QUERY_ID VARCHAR(16777216),
     QUERY_TEXT VARCHAR(16777216),
